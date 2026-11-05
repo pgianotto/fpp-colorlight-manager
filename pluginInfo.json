@@ -1,0 +1,44 @@
+{
+  "repoName": "fpp-colorlight-manager",
+  "name": "Colorlight Manager",
+  "author": "pgianotto",
+  "description": "Discover and inspect Colorlight LED receiving cards (starting with the 5A-75B) from the FPP web UI, without disconnecting Ethernet to use LEDVision. Phase 2: read-only discovery only - no configuration reading, importing, or programming yet.",
+  "homeURL": "https://github.com/pgianotto/fpp-colorlight-manager",
+  "srcURL": "https://github.com/pgianotto/fpp-colorlight-manager.git",
+  "bugURL": "https://github.com/pgianotto/fpp-colorlight-manager/issues",
+  "iconURL": "https://raw.githubusercontent.com/pgianotto/fpp-colorlight-manager/master/icon.png",
+  "allowUpdates": 1,
+  "releaseNotesStyle": "gitRelease",
+  "minMemoryMB": 256,
+  "minCpuCores": 1,
+  "privacy": {
+    "summary": "Sends raw Ethernet discovery broadcasts on a network interface you choose, to find Colorlight receiver cards on that link. Nothing leaves the device.",
+    "sends": [
+      {
+        "to": "broadcast on the selected local Ethernet interface only",
+        "what": "Colorlight discovery query frames (packet type 0x07) and raw socket receipt of replies (0x08)",
+        "why": "to detect connected Colorlight receiver cards and show their id/firmware/uptime",
+        "alwaysOn": false
+      }
+    ],
+    "collects": [],
+    "sensors": [],
+    "remoteAccess": "lan",
+    "systemChanges": [
+      { "kind": "privilege", "what": "Installs a sudoers.d rule allowing the fpp user to run this plugin's backend/receiver_discovery.py via sudo with no password, scoped to that exact script path, so the web UI can send/receive raw Ethernet frames without running as root itself." }
+    ],
+    "closedCode": false,
+    "other": "Phase 2 (read-only discovery) only. No receiver configuration is read, imported, or written by this version."
+  },
+  "versions": [
+    {
+      "minFPPVersion": "10.0",
+      "maxFPPVersion": "0",
+      "branch": "master",
+      "sha": "",
+      "dependencies": {
+        "packages": ["python3"]
+      }
+    }
+  ]
+}

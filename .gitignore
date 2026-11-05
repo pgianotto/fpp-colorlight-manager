@@ -1,0 +1,8 @@
+# Raw packet captures are large working artifacts, not source - keep locally only.
+# The small per-type hex dumps in samples/decoded_frames/ are committed instead.
+samples/*.pcapng
+samples/*.pcap
+
+__pycache__/
+*.pyc
+.pytest_cache/
