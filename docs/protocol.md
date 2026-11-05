@@ -229,6 +229,81 @@ re-run the capture, and diff against this baseline to isolate exactly which byte
 your own pace, no hardware required - a major change from the original plan, which assumed we
 needed hardware captures for all of this.
 
+## MAJOR BREAKTHROUGH: the actual read-config protocol, decoded against real hardware (2026-11-05)
+
+Someone with physical access to a real 5A-75B (firmware **5A 10.16** - same firmware as the
+card documented earlier in this file) ran captures for us using LEDVision 7.0's **Net Card**
+mode, including clicking **"Read"** on the Receiver Parameters tab, which pulled real settings
+off the card: Module 192W×16H, 16-scan, driver IC **DP5125**, decode IC **138 Decoding**,
+cabinet 192×64, DCLK 25.0MHz, Minimum OE 24.0ns, Gamma 2.8, Gray Level 16384, and more (full
+values in the screenshot this was captured from - ask the user if needed). Two capture files:
+`Capture_LEDVision_Start.pcapng` and `Capture 01.pcapng` (both large, not committed to git -
+local only, same as the other raw captures).
+
+### The actual read-config wire protocol
+
+After the standard `0x07` discovery query, a real receiver replies with:
+
+1. One **`0x08`** frame - the already-known identify reply (firmware, uptime, etc.) FPP already
+   parses.
+2. A **sequence of `0x09` frames** - a packet type that exists nowhere in any prior
+   documentation, including FPP's own source. **FPP's `GetReceiverInfo()` silently discards
+   these** because it filters strictly on `CL_RESP_PACKET_TYPE == 0x08`.
+
+The `0x09` frames, concatenated and decompressed, contain the receiver's **entire parameter
+block as a raw-deflate-compressed blob** - this is the actual "read configuration off the card"
+data. Full reassembly/decompression logic (verified working) is in
+`backend/decode_config_stream.py`. Key points:
+
+- Every `0x09` frame is exactly 1070 bytes (same size as the `0x08` reply), data starts with a
+  constant 2-byte prefix (`01 01`).
+- The *first* `0x09` frame has a 36-byte header after that prefix (unknown fields, plus what
+  look like compressed/uncompressed length fields: 6711/30432 bytes in this capture - the real
+  stream ran slightly past the stated compressed length, so treat those as approximate, not
+  exact, until confirmed against another capture) - then the zlib stream starts (`78 9c`).
+- Every *subsequent* `0x09` frame in the same sequence is pure continuation: strip the `01 01`
+  prefix and the rest is more compressed bytes, no new header.
+- The reassembled stream decompresses cleanly as **raw deflate** (strip the 2-byte zlib header,
+  inflate with `wbits=-15`, ignore the trailing checksum - it doesn't reliably validate,
+  probably because trailing frames carry padding past the real end). This was captured once with
+  7 `0x09` frames producing a 31171-byte decompressed blob (close to, but not exactly, the
+  30432 the header implied).
+- This capture showed groups of `0x09` frames repeating periodically (a group of 7 right after
+  discovery, then smaller groups of 1-3 roughly every 0.3-0.5s afterward) - looks like LEDVision
+  keeps the Receiver Parameters window live-synced rather than reading once.
+
+### Confirmed fields inside the decompressed parameter blob
+
+Found by searching the decompressed bytes for the exact values visible in LEDVision's own UI
+for this card:
+
+| Offset (decompressed blob) | Type | Field | Confirmed value |
+|---|---|---|---|
+| 32 | float32 LE | Gamma Value | 2.8 |
+| 178 | float32 LE | Minimum OE (ns) | 24.0 |
+| 196 | uint16 LE | Cabinet Width (px) | 192 |
+| 198 | uint16 LE | Cabinet Height (px) | 64 (immediately adjacent to width - same field pair as the `.rcvp` file format's layout) |
+
+The blob also contains large, clearly-structured regions matching the `.rcvp` file format we
+decoded earlier from LEDVision's installer: identity byte ramps (`00 01 02 ... 0f`,
+`10 11 12 ... 1f`), full printable-ASCII ranges, and a `2b 2b 2b 2b` ("++++") marker - strong
+evidence that **the live wire-protocol parameter blob and the `.rcvp` file format are the same
+underlying structure**, just one travels compressed over the wire and the other is saved
+uncompressed to disk. That means everything we eventually decode from either source transfers
+to the other.
+
+### What's still open
+
+- Module size (192W×16H), scan mode (16), driver IC (DP5125), decode IC (138 Decoding), refresh
+  rate (1920 - found once at decompressed offset 24111, far from the other confirmed fields, so
+  likely a different, separate sub-section of the blob), gray level (16384), and most other
+  visible fields are not yet mapped to specific offsets.
+- The write path (sending a changed config back, and the "Save to Receivers" persist step) has
+  not been captured yet - only the read path. If whoever ran this capture can also click
+  **Send** and **Save to Receivers** after changing something, that's the next capture to get.
+- The two unknown-value header fields in the first `0x09` frame's 36-byte header are still a
+  mystery (possibly a request-id, CRC, or session token - 14 bytes of it looked hash-like).
+
 ## What this means for scope
 
 - Packet types `0x01/0x07/0x08/0x0A/0x55` (discovery + output) are **safe to build on now** —
