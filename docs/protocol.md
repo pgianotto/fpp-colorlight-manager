@@ -292,31 +292,118 @@ underlying structure**, just one travels compressed over the wire and the other 
 uncompressed to disk. That means everything we eventually decode from either source transfers
 to the other.
 
-### What's still open
+### What's still open (as of the read-path capture)
 
 - Module size (192W×16H), scan mode (16), driver IC (DP5125), decode IC (138 Decoding), refresh
   rate (1920 - found once at decompressed offset 24111, far from the other confirmed fields, so
   likely a different, separate sub-section of the blob), gray level (16384), and most other
   visible fields are not yet mapped to specific offsets.
-- The write path (sending a changed config back, and the "Save to Receivers" persist step) has
-  not been captured yet - only the read path. If whoever ran this capture can also click
-  **Send** and **Save to Receivers** after changing something, that's the next capture to get.
 - The two unknown-value header fields in the first `0x09` frame's 36-byte header are still a
   mystery (possibly a request-id, CRC, or session token - 14 bytes of it looked hash-like).
 
-## What this means for scope
+## THE WRITE PATH, captured and partially decoded (2026-11-06)
 
-- Packet types `0x01/0x07/0x08/0x0A/0x55` (discovery + output) are **safe to build on now** —
+Same person, same real 5A-75B (fw 10.16), ran a third capture: clicked **Send**, then
+**Save to Receivers** in LEDVision's Receiver Parameters tab. File:
+`Capture_LEDVision_With_SendAndSave.pcapng` (1.7GB, local only, not in git).
+
+### The write sequence, in order
+
+Both the "Send" and "Save to Receivers" clicks produced the **same burst of packet types, in
+the same order**, back to back in two clearly separated time windows (~8s apart in this
+capture):
+
+```
+0x05 (272B) x2   -- dimensions / session block (see below)
+0x10 (1040B) x2  -- still all-zero, even now (see note below)
+0x03 (784B) x24  -- per-row/output index table (content now DIFFERENT from the
+                    no-card baseline capture - see below)
+0x1F (1048B) x12 -- still all-zero, even now
+0x76 (1171B) x2  -- gamma/brightness lookup table (content now a real nonlinear
+                    curve, not the linear ramp seen in the no-card baseline)
+0x10 (1040B) x4  -- all-zero again
+0x1B (282B) x24  -- the continuous retry/probe type, already known
+```
+
+**Important finding: "Send" and "Save to Receivers" produced byte-for-byte identical `0x05`
+frames** (diffed the two captures' worth, zero differences). Best guess right now: there may not
+be a separate "write to RAM" vs. "persist to flash" distinction in this protocol at all - the
+receiver might treat any complete config-write sequence as automatically persistent. This needs
+one more targeted capture to confirm (watch power-cycle survival), but it simplifies Feature 6
+considerably if true: there may be no separate "commit" step to implement.
+
+### Confirmed: `0x05` (272 bytes) carries panel dimensions, cross-validated two ways
+
+Decoded against the real card's actual values (cabinet 192x64):
+
+- `data[8]` = `0xC0` = **192** (width)
+- `data[10]` = `0x10` = **16** (scan, or possibly module-related - appears alongside width)
+- `data[15]` = `0xC0` = **192**, `data[17]` = `0xC0` = **192** (width repeated - likely appears
+  in more than one sub-field: module width, cabinet width, total canvas width)
+- Later in the packet: `c0 00 40` = **192, 0, 64** - width immediately followed by height,
+  **same adjacent width/height pairing pattern found in the decompressed `0x09` read-path blob**
+  (there at offset 196/198). Strong independent confirmation this is a real, consistent
+  width-then-height field pair used throughout the protocol, not a coincidence.
+- The `2b 2b 2b 2b` ("++++") marker and the `00 01 02...0f` / `10 11 12...1f` identity ramps are
+  present at the same relative positions as the earlier no-card baseline capture of this same
+  packet type - confirmed as fixed/constant content, not per-config data.
+
+### Confirmed: `0x76` (1171 bytes) is a gamma/brightness lookup table
+
+Unlike the no-card baseline (a simple linear ramp - `10 01 00`, `20 02 00`, `30 03 00`...), this
+real-card capture's `0x76` content is a **non-linear, steadily-accelerating curve** (3-byte
+entries climbing from near-zero up through large values in a classic gamma-curve shape), repeated
+three times within the single frame. This strongly confirms `0x76` is the gamma/brightness LUT
+(matches the UI's "Gamma Value: 2.8" setting) rather than some other generic table.
+
+### Revised: `0x03` (784 bytes) is a per-row/output index table, content varies with your panel
+
+The no-card baseline's `0x03` content cycled through groups of 8 (byte0: 0-7, byte1 incrementing
+every 8th entry) - that was LEDVision's *default*, multi-output test layout. This real capture
+(single 192x64 cabinet, one receiver) instead shows a **simple linear sequence**: `(0,0,0),
+(1,0,0), (2,0,0), (3,0,0)...` climbing past 100 - i.e., the table's shape depends on your actual
+panel/output configuration, confirming it's a real per-config mapping table (most likely
+per-scanline or per-module row index) rather than a fixed constant.
+
+### Still zero: `0x10` and `0x1F`
+
+Even during a real write to real hardware, these two packet types remained **entirely
+zero-filled** - same as the no-card baseline. Current best guess: these are reserved for
+optional features not exercised by this simple single-cabinet setup (possibly calibration data,
+pixel-by-pixel correction, or multi-cabinet cascade info - all things this particular capture's
+panel didn't use). Not yet confirmed.
+
+### New type found: `0x26` (278 bytes)
+
+Matches FPP's own source comment size guess almost exactly ("Data Length: 264" vs. our measured
+265 data bytes). Appeared 372 times across the whole capture (not just during the write burst),
+suggesting it's a continuous periodic status/heartbeat packet rather than one-time config data -
+not yet decoded in detail.
+
+## What this means for scope (current, 2026-11-06)
+
+- Packet types `0x01/0x07/0x08/0x0A/0x55` (discovery + output) remain **safe to build on** —
   FPP's own driver proves them correct in production.
-  - **Risk even in “safe” territory:** FPP never *sends* `0x02` and its own comment admits the
-    `0x08` discovery-reply width/height-like fields (Data[21-24]) don't arithmetically match
-    cabinet offsets the way expected. Treat anything derived from those fields as unverified
-    until confirmed against our own hardware, even though the bytes themselves are read, not guessed.
-- Everything required for Features 2, 3 (meaningfully — see below), 4, 5, 6, 7 requires
-  decoding packet types `0x10/0x11/0x18/0x1F/0x26/0x31/0x32/0x76`, which is **undocumented
-  anywhere we can find**. This must come from our own Wireshark captures of LEDVision talking
-  to the actual 5A-75B V7.0 hardware (see `development-plan.md` Phase 1 capture plan).
-- Feature 3 (backup) has a fallback that doesn't require decoding: a **raw register/EEPROM dump**
-  if we find a read-back command, even undecoded, can still be stored as a binary blob backup —
-  but per the brief's own safety rule, it must **not** be presented as a verified, restorable
-  configuration until the write path is understood well enough to confirm round-trip fidelity.
+- **Read path (Feature 2/3) is now substantially understood**: `0x08` identify + a sequence of
+  `0x09` frames carrying a raw-deflate-compressed parameter blob. Reassembly/decompression is
+  implemented and working in `backend/decode_config_stream.py`. Several fields are mapped to
+  exact offsets (gamma, minimum OE, cabinet width/height); most are not yet.
+- **Write path (Feature 5/6) is now substantially understood** too: a fixed-order burst of
+  `0x05` (dimensions), `0x10` (unused in simple configs), `0x03` (per-row/output table, shape
+  depends on panel layout), `0x1F` (unused in simple configs), `0x76` (gamma LUT), `0x10` again,
+  `0x1B` (retry/probe). "Send" and "Save to Receivers" appear to send the identical sequence -
+  there may be no separate RAM-vs-flash commit step in this protocol.
+- **Still open**: exact offsets for most individual settings (module size, scan mode, driver IC,
+  decode IC, refresh rate, data group count, etc.) within `0x05`/`0x03`/`0x76`; what `0x10` and
+  `0x1F` are actually for (they've been zero in every capture so far); whether Send vs. Save
+  really are wire-identical or whether persistence happens some other way; the `0x11`
+  ("Save Config??" per FPP's old comment), `0x31`, `0x32` types still haven't appeared in any
+  capture at all.
+- Feature 3 (backup)'s fallback plan (raw undecoded blob, clearly labeled unverified) is now less
+  necessary than originally thought - the `0x09` stream decompresses into something we can
+  already partially interpret, so a "backup" can be a real, growing-in-fidelity decode rather
+  than an opaque blob, as more fields get mapped.
+- **Next most valuable capture**: change exactly ONE visible setting (e.g. just brightness, or
+  just scan mode) in LEDVision, Send, and capture again - diffing against this capture's `0x05`/
+  `0x03`/`0x76` content the same way we isolated width/scan in the `.rcvp` file format. That's
+  the fastest remaining path to mapping the rest of the fields.
