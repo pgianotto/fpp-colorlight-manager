@@ -441,3 +441,41 @@ for scan mode, driver IC, decode IC, and the other visible fields next.
   just scan mode) in LEDVision, Send, and capture again - diffing against this capture's `0x05`/
   `0x03`/`0x76` content the same way we isolated width/scan in the `.rcvp` file format. That's
   the fastest remaining path to mapping the rest of the fields.
+
+## Mystery solved: why "Segments x16 → x32" never showed up on the wire (2026-11-06)
+
+Three separate capture attempts (`Brightness_8to5.zip`/`Anotherone.zip` and now a third, narrated
+one, `Capture_01.pcapng`) all tried to isolate a Segments x16→x32 change and all three showed
+**zero difference anywhere in the write-burst traffic**. The third attempt included screenshots
+of the actual LEDVision session, which explain why:
+
+1. Before: `Segment x 16`, `Refresh Rate 1920`, `Width 192` (module is 192×16, cabinet 192×64,
+   `<=381` shown as the width limit at x16 segments).
+2. After selecting `Segment x 32` in the dropdown: `Refresh Rate` auto-updated to `3840`, but the
+   `Width` field's limit shown next to it dropped to **`<=191`** - and the field turned red with a
+   warning icon, because the panel's actual width (192) now *exceeds* the max width Segment x32
+   allows (191, i.e. roughly half of the x16 limit, as expected since 32 segments only has half
+   the addressable width per segment vs 16).
+3. Clicking **Send** with that invalid combination pops a LEDVISION dialog: *"Current parameter
+   have the following problems: 1. Receiver card width is not proper (it may not be an integer
+   multiple of the width of the module or exceeding the max width)! Continue to Send?"*
+   (Yes/No).
+
+The capture itself (160s, 1.86M frames) contains exactly **one** write burst, at t=155.83s:
+2× `0x05` (272B), ~a dozen `0x03` (784B each), and `0x1B` (282B) - no `0x76` gamma LUT this time
+(unchanged, so apparently not resent). Byte-for-byte diff of all of them against the established
+x16-segment baseline (`samples/decoded_frames/write_type05_dimensions.txt` /
+`write_type03_row_table.txt`) shows **every single byte identical, including the trailing
+checksum** (`24 a9 14 58`). So whatever happened at the dialog (Yes or No), **the data that
+actually went out on the wire still describes the old Segment x16 / Refresh 1920 configuration,
+not x32** - LEDVision never transmits the requested change when the width/segment combination is
+invalid for this panel.
+
+**Conclusion**: this was never a capture-methodology problem. `192×16, Segment x16` is simply not
+compatible with `Segment x32` on this panel (the effective max width halves and 192 > 191), so
+LEDVision silently keeps/reverts to the last valid values instead of sending the edited ones. To
+actually observe a Segments x32 write on the wire we'd need either a panel/width combination where
+x32 is valid (e.g. temporarily set width to something ≤191, like 96 or 128, *then* switch to
+Segment x32 and Send), or to abandon this field and pick a different, unconstrained one (scan
+mode, driver IC, decode IC, gray level, DCLK, data group count are all good next candidates and
+don't have this kind of cross-field validation as far as we've seen).
