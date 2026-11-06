@@ -86,6 +86,32 @@ KNOWN_FIELDS = {
     "cabinet_height_px": (198, "<H"),
 }
 
+# LEDVision ships ~856 example receiver-profile files (.rcvbp, under its own
+# config_files/ directory) covering dozens of driver/decode ICs. Confirmed
+# 2026-11-06 (see docs/protocol.md) that the .rcvbp FILE format and this wire
+# READ blob share the same struct layout for at least the first ~200 bytes,
+# offset by a constant:
+RCVBP_TO_WIRE_OFFSET_DELTA = -20  # wire_offset = rcvbp_offset + RCVBP_TO_WIRE_OFFSET_DELTA
+
+# Verified via: gamma_value's exact float matching at rcvbp offset 52 / wire
+# offset 32, and the 16-byte incrementing marker bytes(range(0x10,0x20)) landing
+# at rcvbp offset 146 / wire offset 126 - both exactly 20 bytes apart, with
+# consistent byte-for-byte structural alignment (shared constant bytes, and
+# value-differing fields lining up the same way) across the whole span.
+#
+# Candidate field found via this translation, NOT YET CONFIRMED against a
+# second real card:
+#   decode_ic_code: wire offset 84 (single byte). In the .rcvbp format this
+#   same slot (offset 104) is a clean enum across 23+ sample files: 0="138
+#   Decoding", 1="5166", 9="5266", 17="2013". Our one real capture (a card
+#   whose LEDVision screen shows "138 Decoding") reads back wire[84] == 1,
+#   not the expected 0 - most likely explanation is the GUI's own
+#   preset-authoring enum and the firmware's wire-level enum are two
+#   independently assigned code spaces that just happen to share this struct
+#   slot, rather than an offset error (everything else at this delta lines up
+#   exactly). Needs a second real read capture, ideally from a receiver with
+#   a different Decode IC, to pin down the actual wire-side enum.
+
 
 def decode_known_fields(blob: bytes) -> dict:
     result = {}

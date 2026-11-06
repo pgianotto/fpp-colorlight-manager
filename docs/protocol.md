@@ -515,3 +515,71 @@ needs a genuinely new, controlled single-variable capture. Two useful variants f
    anything, change one field and Send, then click **Read** again (pulling the value back off the
    card) in the *same* capture - this is the only way to get a controlled before/after diff of the
    `0x09` config blob itself, independent of the `0x05`/`0x03`/`0x76` write packets.
+
+**Update, same day**: "fully mined" turned out to only be true of *captures*. LEDVision's own
+*installation* on disk is a second, much bigger source of ground truth - see next section.
+
+## A second data source we'd been ignoring: LEDVision's own bundled profile library (2026-11-06)
+
+`C:\Program Files (x86)\ColorLight\LEDVISION\` (wherever LEDVision is actually installed) ships
+**856 example receiver-profile files** (`.rcvbp`) under `config_files\`, one per
+manufacturer/module combination Colorlight has ever published a preset for - covering 25+ driver
+ICs (DP5125, DP5020, DP7268, FM5020/6124/6126/6153/6253, ICN2019 through ICN2163, MBI5124,
+SM16159/16169/16207/16259/5266, etc.) and ~10 decode ICs. These are plain binary files, no
+protocol or hardware needed to read them - a goldmine sitting on disk the whole time. There's also
+a `ChipSetting.dll` in the same install that almost certainly contains the authoritative
+driver/decode IC tables and packing logic in native code, not yet examined.
+
+### Isolating fields directly from the file library (no capture needed)
+
+Parsed all 856 filenames (`<panel>-<driverIC>+<decodeIC>-<X.XX>.rcvbp`) and grouped them to find
+sets that hold everything but one token constant - the same single-variable-diff technique used
+on captures, just applied to a static library instead:
+
+- **Decode IC is a clean single byte at file offset 104.** Verified across 23+ samples spanning
+  different driver ICs, panel sizes, and scan modes - always the same value for the same decode
+  name: `0="138 Decoding"`, `1="5166"`, `9="5266"`, `17="2013"`.
+- **Driver IC is not a single byte** - diffing three otherwise-identical presets (same panel, same
+  decode, same gamma, only driver IC differs: 16169 vs 16259 vs 2053) shows ~25-40 bytes change,
+  in clusters (offsets 78, 132-144, 222-250, plus the trailing checksum). Makes sense: different
+  driver chips need genuinely different current/timing parameters, not just a label. Practical
+  conclusion: identifying the driver IC on a connected card is better solved as **fingerprint
+  matching** against this 856-file library than as a single enum field.
+- The gamma value we'd already found at wire-blob offset 32 turns out to live at **file offset
+  52** in `.rcvbp` - confirmed by an exact value match (2.8 both places), not just inference.
+
+### The big find: `.rcvbp` and the wire read-blob share the same struct layout, 20 bytes apart
+
+Lined up a real `.rcvbp` file against `samples/decoded_frames/receiver_params_decompressed.bin`
+(our one live read-config capture) byte-for-byte and found they are **the same underlying
+structure**, just with a constant 20-byte offset: `wire_offset = rcvbp_offset - 20`. Verified two
+ways:
+- **`gamma_value`**: exact value match, not just position - `33 33 33 40` (2.8 as float32 LE) sits
+  at rcvbp offset 52 and wire offset 32, exactly 20 apart.
+- **The 16-byte incrementing marker** `bytes(range(0x10, 0x20))` (part of a placeholder/calibration
+  table both formats carry) - `rc.find(marker) == 146`, `wire.find(marker) == 126`. Also exactly
+  20 apart.
+- Beyond those two anchors, the ~100 bytes between them line up byte-for-byte structurally in both
+  files: identical constant bytes in the same relative positions (`ff ff ff 03 02 01 00 01`,
+  `32 14`, `00 70 42`), and a 3x-repeated 2-byte pattern (probably an R/G/B-channel calibration
+  triplet) at the same relative offset in both, with different-but-structurally-parallel values
+  (`00 fc` x3 in the wire blob vs `cf 39` x3 in this particular `.rcvbp` - different cards, same
+  slot).
+
+This means **every field position documented in either format now transfers to the other** -
+we've effectively doubled our reference data overnight, and can keep mining the `.rcvbp` library
+(856 static files, zero captures needed) to find more wire-blob field offsets going forward.
+
+**One open mismatch, not yet resolved**: translating the `.rcvbp` decode-IC slot (offset 104)
+through the delta lands on wire offset 84. Our one real card (LEDVision shows "138 Decoding" for
+it) reads back `wire[84] == 1`, but per the `.rcvbp` enum table `1` means "5166", not the expected
+`0` ("138 Decoding"). Given how precisely everything else lines up at this delta, this looks less
+like an offset error and more like **the GUI's own preset-authoring enum and the firmware's actual
+wire-level enum are two independently assigned code spaces** for the same physical chip - they
+just happen to share the same struct slot because both formats clearly derive from the same
+underlying receiver memory layout. Confirming this (and getting a real decode-IC lookup table)
+needs one more real read-config capture, ideally from a receiver with a **different, known** Decode
+IC, to diff against this one the same way Brightness Level was isolated.
+
+Implemented in [`backend/decode_config_stream.py`](../backend/decode_config_stream.py) as
+`RCVBP_TO_WIRE_OFFSET_DELTA` with the candidate (unconfirmed) decode IC offset documented inline.
