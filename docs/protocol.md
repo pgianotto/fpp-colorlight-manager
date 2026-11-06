@@ -479,3 +479,39 @@ x32 is valid (e.g. temporarily set width to something ≤191, like 96 or 128, *t
 Segment x32 and Send), or to abandon this field and pick a different, unconstrained one (scan
 mode, driver IC, decode IC, gray level, DCLK, data group count are all good next candidates and
 don't have this kind of cross-field validation as far as we've seen).
+
+## Audit: have we exhausted the captures we already have? (2026-11-06)
+
+Before asking for yet another capture, re-mined all 6 captures collected so far
+(`Capture_LEDVision_Start`, `Capture 01`, `Capture_LEDVision_With_SendAndSave`, `Brightness_8to5`,
+`Anotherone`, `Capture_01`/`Wireshark_01`) for anything not yet squeezed out of them:
+
+- **Brute-forced known Receiver-Parameters values** (Refresh Rate 1920, Gray Level 16384, DCLK
+  25.0, etc.) against the already-decompressed `0x09` config blob at every plausible
+  uint8/16/32/float32 offset. Only one interesting hit: `1920` as `<H` at offset 24111 - but
+  cross-checking against a second capture's blob at that same offset showed it's part of an
+  incrementing index/ID table (`...00 80 09|0a 00 80 0c 00 80 07 06 ae 00 06 af...`), not a
+  settings field - a coincidental byte match, not real. Ruled out rather than reported as a find.
+- **Decoded the read-path (`0x09`) blob from every capture that has one** (`start`, `cap01`,
+  `sendsave`, `Brightness_8to5`) and diffed each against the original baseline blob. Three of the
+  four are **byte-for-byte identical** to the original baseline (31171 bytes, zero diffs) - strong
+  evidence the decompression/reassembly is fully deterministic when the underlying settings
+  haven't changed. `Brightness_8to5`'s blob differs only in a small receiver-ID/index table late
+  in the blob (session-specific, not a setting) - expected, since **no capture we have ever reads
+  the config a second time after changing something**; every `0x09` sequence we've captured
+  reflects the exact same pre-change baseline state.
+- **Re-checked every `0x05` write burst across all captures** against the established baseline -
+  all are either byte-identical (no change sent) or already-mapped (Brightness Level, offsets 24
+  and 156).
+
+**Conclusion: the existing logs are now fully mined.** There is no free diff left sitting unused -
+every remaining field mapping (scan mode, driver IC, decode IC, data group, display mode, etc.)
+needs a genuinely new, controlled single-variable capture. Two useful variants for the next ask:
+1. A **write-path** capture (as before): change exactly one field with no cross-field validation
+   (Blanking Value, Calibration Mode, Display Mode, Gray Mode, No Signal Action, Data/OE Polarity
+   Reverse, Enable Gradual are all simple toggles unlikely to hit a "value not proper" wall like
+   Segments did), Send, capture just that burst.
+2. A **read-path** capture we don't have any version of yet: click **Read** *before* changing
+   anything, change one field and Send, then click **Read** again (pulling the value back off the
+   card) in the *same* capture - this is the only way to get a controlled before/after diff of the
+   `0x09` config blob itself, independent of the `0x05`/`0x03`/`0x76` write packets.
