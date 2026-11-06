@@ -380,6 +380,31 @@ Matches FPP's own source comment size guess almost exactly ("Data Length: 264" v
 suggesting it's a continuous periodic status/heartbeat packet rather than one-time config data -
 not yet decoded in detail.
 
+## First controlled single-variable diff: Brightness Level isolated (2026-11-06)
+
+Same person, same card, changed **only the "Brightness Level" dropdown (8 → 5)** in LEDVision
+and clicked Send, capturing again (`Brightness_8to5.pcapng`, local only). This is exactly the
+one-variable-at-a-time methodology recommended earlier, and it worked cleanly:
+
+- **`0x03` and `0x76` were byte-for-byte unchanged** - cleanly rules brightness out of those two
+  packet types.
+- **`0x05` changed in exactly two places** (both in lock-step, same value in both spots -
+  confirms this protocol stores some fields redundantly at multiple offsets, consistent with
+  width/192 also appearing more than once earlier):
+  - data offset **24** (frame byte 0x25): `0x03` → `0x02`
+  - data offset **156** (frame byte 0xA9): `0x03` → `0x02`
+  - **Mapping is not yet 1:1 obvious**: UI level 8→wire value 3, UI level 5→wire value 2. Not a
+    direct linear encoding of the displayed number - more data points (try level 1, level 4,
+    level 8 individually) needed to nail the exact function. But the *offset* is now solid.
+- **Bonus find**: the **last 4 bytes of the `0x05` packet changed completely** (`24 a9 14 58` →
+  `35 1b de 7b`) even though only 2 content bytes changed. This is almost certainly a
+  **checksum/CRC covering the packet body** - worth checking if other packet types end the same
+  way, and whether it's a standard CRC32 (if so, writing a valid config packet requires computing
+  this correctly, which is solvable once we identify the exact algorithm/seed).
+
+This single clean diff is worth more than hours of guessing - same technique should be repeated
+for scan mode, driver IC, decode IC, and the other visible fields next.
+
 ## What this means for scope (current, 2026-11-06)
 
 - Packet types `0x01/0x07/0x08/0x0A/0x55` (discovery + output) remain **safe to build on** —
