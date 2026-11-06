@@ -373,12 +373,21 @@ optional features not exercised by this simple single-cabinet setup (possibly ca
 pixel-by-pixel correction, or multi-cabinet cascade info - all things this particular capture's
 panel didn't use). Not yet confirmed.
 
-### New type found: `0x26` (278 bytes)
+### New type found: `0x26` (278 bytes) — correction, see below
 
 Matches FPP's own source comment size guess almost exactly ("Data Length: 264" vs. our measured
-265 data bytes). Appeared 372 times across the whole capture (not just during the write burst),
-suggesting it's a continuous periodic status/heartbeat packet rather than one-time config data -
-not yet decoded in detail.
+265 data bytes). Appeared ~372 times across the whole capture (not just during the write burst),
+suggesting a continuous periodic status packet rather than one-time config data - not yet decoded
+in detail.
+
+**Correction (2026-11-07):** filtering by frame length alone is not reliable - a later capture
+showed 278-byte frames are actually a *mix* of two different packet types: `0x26` and `0x06`
+(the same "heartbeat" type seen elsewhere at 140 bytes, apparently also capable of a larger
+278-byte variant with real content, not just a fixed poll). In one capture, the periodic status
+packet ran as `0x26` for the first ~86 occurrences, then **permanently switched to `0x06`
+partway through the session** (no burst or other visible event at that moment) and stayed `0x06`
+for the rest of the capture. Cause unknown. Takeaway: always verify the actual type byte
+(frame offset 12), never group packets by length alone.
 
 ## First controlled single-variable diff: Brightness Level isolated (2026-11-06)
 
